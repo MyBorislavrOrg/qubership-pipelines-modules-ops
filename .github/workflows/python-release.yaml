@@ -1,7 +1,15 @@
 ---
 
+# This is a workflow template for Python release.
+# It will publish a new version of the package to PyPI and create a release draft in the repository.
+# The workflow requires the following secrets to be set in the repository:
+# - PYPI_API_TOKEN: PyPI API token to publish the package
+# The workflow requires the configuration release-drafter-config.yml file to be placed in the .github folder of the repository.
+# The example file can be found there:
+# https://github.com/Netcracker/qubership-workflow-hub/blob/main/docs/examples/release-drafter-config.yml
+
 name: Python Release
-run-name: "${{ github.event.repository.name }} release ${{ inputs.version }}"
+run-name: "${{ github.event.repository.name }} release ${{ inputs.version || inputs.poetry-version-options }}"
 on:
   workflow_dispatch:
     inputs:
@@ -12,21 +20,21 @@ on:
       python-version:
         description: 'Python version to use'
         required: false
-        default: '3.8'
-      poetry_version_options:
+        default: '3.11'
+      poetry-version-options:
         description: 'Poetry version bump (e.g., patch, minor, major)'
         required: false
         default: 'patch'
-      poetry_build_params:
+      poetry-build-params:
         description: 'Additional poetry build parameters'
         required: false
         default: ''
-      pytest_run:
+      pytest-run:
         description: 'Run pytest (true/false)'
         required: true
         type: boolean
         default: true
-      pytest_params:
+      pytest-params:
         description: 'Parameters for pytest'
         required: false
         default: '--maxfail=3 -v'
@@ -35,7 +43,7 @@ permissions:
   contents: read
 
 jobs:
-  show-params:
+  pre-build-checks:
     runs-on: ubuntu-latest
     steps:
       - name: Input parameters
@@ -43,14 +51,10 @@ jobs:
           echo "Input parameters:" >> $GITHUB_STEP_SUMMARY
           echo "Version: ${{ github.event.inputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "Python version: ${{ github.event.inputs.python-version }}" >> $GITHUB_STEP_SUMMARY
-          echo "Poetry version options: ${{ github.event.inputs.poetry_version_options }}" >> $GITHUB_STEP_SUMMARY
-          echo "Poetry build parameters: ${{ github.event.inputs.poetry_build_params }}" >> $GITHUB_STEP_SUMMARY
-          echo "Pytest run: ${{ github.event.inputs.pytest_run }}" >> $GITHUB_STEP_SUMMARY
-          echo "Pytest parameters: ${{ github.event.inputs.pytest_params }}" >> $GITHUB_STEP_SUMMARY
-
-  check-tag:
-    runs-on: ubuntu-latest
-    steps:
+          echo "Poetry version options: ${{ github.event.inputs.poetry-version-options }}" >> $GITHUB_STEP_SUMMARY
+          echo "Poetry build parameters: ${{ github.event.inputs.poetry-build-params }}" >> $GITHUB_STEP_SUMMARY
+          echo "Pytest run: ${{ github.event.inputs.pytest-run }}" >> $GITHUB_STEP_SUMMARY
+          echo "Pytest parameters: ${{ github.event.inputs.pytest-params }}" >> $GITHUB_STEP_SUMMARY
       - name: Check if tag exists
         if: ${{ inputs.version != '' }}
         id: check_tag
@@ -63,50 +67,54 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   publish:
+    runs-on: ubuntu-latest
     permissions:
       contents: write
-    needs: [check-tag]
-    uses: netcracker/qubership-workflow-hub/.github/workflows/python-publish.yml@main
-    with:
-      version: ${{ inputs.version }}
-      poetry_version_options: ${{ inputs.poetry_version_options }}
-      python-version: ${{ inputs.python-version }}
-      poetry_build_params: ${{ inputs.poetry_build_params }}
-      pytest_run: ${{ inputs.pytest_run }}
-      pytest_params: ${{ inputs.pytest_params }}
-      gh_app_id: ${{ vars.GH_BUMP_VERSION_APP_ID }}
-    secrets:
-      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-      GH_APP_KEY: ${{ secrets.GH_BUMP_VERSION_APP_KEY }}
-
-  get-current-version:
-    needs: [publish]
+    needs: [pre-build-checks]
     outputs:
-      current_version: ${{ steps.get_version.outputs.CURRENT_VERSION }}
-    runs-on: ubuntu-latest
+      published-version: ${{ steps.publish.outputs.published-version }}
     steps:
-      - name: Checkout code
+      - name: "Prepare app token"
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ vars.GH_BUMP_VERSION_APP_ID }}
+          private-key: ${{ secrets.GH_BUMP_VERSION_APP_KEY }}
+      - name: "Checkout"
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          token: ${{ steps.app-token.outputs.token }}
+      - name: "Setup Python ${{ inputs.python-version }}"
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
 
-      - name: Get current version
-        id: get_version
+      - name: "Publish"
+        id: publish
+        uses: myborislavrorg/qubership-workflow-hub/actions/poetry-publisher@feature/poetry-publisher-action-wa
+        with:
+          package_version: ${{ inputs.version }}
+          poetry_version_bump: ${{ inputs.poetry-version-options }}
+          poetry_build_options: ${{ inputs.poetry-build-params }}
+          run_pytest: ${{ inputs.pytest-run }}
+          pytest_options: ${{ inputs.pytest-params }}
+          publish: "false"
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      - name: "Commit changes"
         run: |
-          CURRENT_VERSION=$(grep -e '^version =' pyproject.toml | cut -d'=' -f2)
-          CURRENT_VERSION=${CURRENT_VERSION//\"/}
-          echo "CURRENT_VERSION=${CURRENT_VERSION// /}" >> $GITHUB_OUTPUT
-
-      - name: Output current version
-        run: |
-          echo "Released version: ${{ steps.get_version.outputs.CURRENT_VERSION }}" >> $GITHUB_STEP_SUMMARY
+          git config --global user.email "tech@qubership.org"
+          git config --global user.name "tech"
+          git add .
+          git commit -m "Update version to ${{ steps.publish.outputs.published-version }} for release"
+          git push -u origin ${{ github.ref }}
 
   github-release:
     permissions:
       contents: write
       pull-requests: write
-    needs: [get-current-version]
+    needs: [publish]
     uses: Netcracker/qubership-workflow-hub/.github/workflows/release-drafter.yml@v1.0.1
     with:
-      version: ${{ needs.get-current-version.outputs.current_version }}
+      version: ${{ needs.publish.outputs.published-version }}
       publish: true
