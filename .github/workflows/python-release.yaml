@@ -72,7 +72,7 @@ jobs:
       contents: write
     needs: [pre-build-checks]
     outputs:
-      published-version: ${{ steps.publish.outputs.published-version }}
+      published-version: ${{ steps.publish.outputs.release-version }}
     steps:
       - name: "Prepare app token"
         if: ${{ vars.GH_BUMP_VERSION_APP_ID != '' }}
@@ -107,7 +107,7 @@ jobs:
           git config --global user.email "tech@qubership.org"
           git config --global user.name "tech"
           git add .
-          git commit -m "Update version to ${{ steps.publish.outputs.published-version }} for release"
+          git commit -m "Update version to ${{ steps.publish.outputs.release-version }} for release"
           git push -u origin ${{ github.ref }}
 
   github-release:
