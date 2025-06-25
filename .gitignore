@@ -1,10 +1,7 @@
+.vscode
 .idea
-.vs
-.cache
-.venv
-.execution
+node_modules
+.DS_Store
 dist
-pack
-venv
-__pycache__/
-poetry.lock
+coverage
+.env
